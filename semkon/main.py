@@ -207,7 +207,7 @@ File contents:
         ]
 
         for _ in range(self._max_messages):
-            resp_msg = (
+            resp = (
                 openai_client.beta.chat.completions.parse(
                     **MODEL,
                     messages=messages,  # type: ignore
@@ -217,26 +217,27 @@ File contents:
                         else FullFilesIncludedResponse
                     ),
                 )
-                .choices[0]
-                .message
             )
-            if resp_msg.content is None:
-                raise RuntimeError("No response from LLM")
-            logger.debug(resp_msg.content)
-            messages.append({"role": "assistant", "content": resp_msg.content})
-            if resp_msg.parsed is None:
-                raise RuntimeError("No response from LLM")
-            response = resp_msg.parsed.data
+            logger.debug(f"Token usage: {resp.usage}")
 
-            if isinstance(response, CorrectnessExplanation):
+            resp_message = resp.choices[0].message
+            if resp_message.content is None:
+                raise RuntimeError("No response from LLM")
+            logger.debug(resp_message.content)
+            messages.append({"role": "assistant", "content": resp_message.content})
+            if resp_message.parsed is None:
+                raise RuntimeError("No response from LLM")
+            response_data = resp_message.parsed.data
+
+            if isinstance(response_data, CorrectnessExplanation):
                 return ProofCheckResult(
                     theorem_id=theorem_id,
-                    correctness=response.correctness,
-                    explanation=response.explanation,
+                    correctness=response_data.correctness,
+                    explanation=response_data.explanation,
                 )
             else:
                 files_requested = (
-                    all_files & {Path(p) for p in response.files_requested}
+                    all_files & {Path(p) for p in response_data.files_requested}
                 ) - files_shown
                 files_shown.update(files_requested)
 
