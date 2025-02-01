@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools >= 65.5.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+requires-python = ">=3.9,<4"
+name = "semkon"
+dependencies = [
+    "black",
+    "chromadb==0.6.*",
+    "GitPython==3.1.*",
+    "loguru==0.7.*",
+    "openai==1.60.*",
+    "pydantic==2.10.*",
+    "pydantic-settings",
+    "pydeps==3.0.*",
+    "pyright",
+    "typer==0.15.*",
+]
+version = "0.0.0"
+
+[project.scripts]
+semkon = "semkon.main:cli"
+
+[tool.setuptools.packages.find]
+include = ["semkon"]
+namespaces = false
+
+[tool.black]
+line-length = 80
+
+[tool.isort]
+profile = "black"
+line_length = 80
+lines_after_imports = 2
+combine_as_imports = true
+
+[tool.pyright]
+reportIncompatibleVariableOverride = true
+reportIncompatibleMethodOverride = true
+useLibraryCodeForTypes = true
+strictListInference = true
+strictDictionaryInference = true
+strictSetInference = true
+
+[tool.ruff]
+lint.select = ["F401"]
+line-length = 80
