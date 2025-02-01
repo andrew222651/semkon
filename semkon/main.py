@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from typing import Annotated, Literal, Sequence
+from typing import Annotated, Any, Literal, Sequence
 
 import chromadb
 import openai
@@ -19,7 +19,10 @@ from .python_deps import get_deps_rec
 
 # o1-preview and o1 gave good results. everything else was bad (deepseek,
 # claude, gpt-4o, gemini, o3-mini).
-MODEL = "o1"
+MODEL: dict[str, Any] = {
+    "model": "o1",
+    "reasoning_effort": "medium",
+}
 
 logger.remove()
 logger.add(sink=sys.stderr, level="DEBUG")
@@ -206,7 +209,7 @@ File contents:
         for _ in range(self._max_messages):
             resp_msg = (
                 openai_client.beta.chat.completions.parse(
-                    model=MODEL,
+                    **MODEL,
                     messages=messages,  # type: ignore
                     response_format=(
                         FullFilesExcludedResponse
