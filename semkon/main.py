@@ -17,7 +17,8 @@ from .properties import extract_theorem_ids
 from .python_deps import get_deps_rec
 
 
-# o1-preview and o1 gave good results. everything else was bad (deepseek, claude, gpt-4o, gemini, o3-mini)
+# o1-preview and o1 gave good results. everything else was bad (deepseek,
+# claude, gpt-4o, gemini, o3-mini).
 MODEL = "o1"
 
 logger.remove()
@@ -128,12 +129,12 @@ about the codebase. The proposition we are interested in starts
 with "::: {{.theorem #{theorem.theorem_id}}}", and is followed by a proof.
 
 In your response, state whether the proof (not the proposition) is correct. By
-"correct", we mean very high confidence that the proof does in fact prove the
-proposition and that the proof is supported by what the code does. Mark the
-proof as "incorrect" if you understand it and the code but the proof is wrong.
-Use "unknown" if e.g. you don't 100% know how an external library works, or the
-proof needs more detail. Skeptically and rigorously check every assumption with
-references to the code.
+"correct", we mean very high confidence that each step of the proof is valid,
+the proof does in fact prove the proposition, and that the proof is supported by
+what the code does. Mark the proof as "incorrect" if you understand it and the
+code but the proof is wrong. Use "unknown" if e.g. you don't 100% know how an
+external library works, or the proof needs more detail. Skeptically and
+rigorously check every claim with references to the code.
         
 
 File contents:
@@ -166,13 +167,13 @@ make a final determination.
 2. Correctness verdict
 
 In this response, state whether the proof is correct. By "correct", we mean very
-high confidence that the proof does in fact prove the proposition and that the
-proof is supported by what the code does. Mark the proof as "incorrect" if you
-understand it and the code but the proof is wrong. Use "unknown" if e.g. you
-don't 100% know how an external library works, or the proof needs more detail.
-Skeptically and rigorously check every assumption with references to the code.
-(Use this response only if you have seen enough of the codebase to make a
-determination.)
+high confidence that each step of the proof is valid, the proof does in fact
+prove the proposition, and that the proof is supported by what the code does.
+Mark the proof as "incorrect" if you understand it and the code but the proof is
+wrong. Use "unknown" if e.g. you don't 100% know how an external library works,
+or the proof needs more detail. Skeptically and rigorously check every claim
+with references to the code. (Use this response only if you have seen enough of
+the codebase to make a determination.)
 
 File contents:
 {self._format_file(theorem.rel_path)}
