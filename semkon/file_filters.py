@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from git import Repo
+from loguru import logger
 
 
 def is_text_file(abs_path: Path) -> bool:
@@ -17,6 +18,7 @@ def is_small_file(abs_path: Path) -> bool:
 
 def get_rel_paths(directory: Path) -> list[Path]:
     if (directory / ".git").exists() and (directory / ".git").is_dir():
+        logger.debug("Directory is a git repo")
         repo = Repo(directory)
         raw_abs_paths = [
             directory / Path(s)
@@ -28,12 +30,11 @@ def get_rel_paths(directory: Path) -> list[Path]:
             )
         ]
     else:
+        logger.debug("Directory is not a git repo")
         raw_abs_paths = [p for p in directory.glob("**/*") if p.is_file()]
 
     return sorted(
-        [
-            p.relative_to(directory)
-            for p in raw_abs_paths
-            if is_text_file(p) and is_small_file(p)
-        ]
+        p.relative_to(directory)
+        for p in raw_abs_paths
+        if is_text_file(p) and is_small_file(p)
     )

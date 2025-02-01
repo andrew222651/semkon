@@ -6,7 +6,6 @@ build-backend = "setuptools.build_meta"
 requires-python = ">=3.9,<4"
 name = "semkon"
 dependencies = [
-    "black",
     "chromadb==0.6.*",
     "GitPython==3.1.*",
     "loguru==0.7.*",
@@ -14,10 +13,16 @@ dependencies = [
     "pydantic==2.10.*",
     "pydantic-settings",
     "pydeps==3.0.*",
-    "pyright",
     "typer==0.15.*",
 ]
 version = "0.0.0"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "pyright",
+]
 
 [project.scripts]
 semkon = "semkon.main:cli"

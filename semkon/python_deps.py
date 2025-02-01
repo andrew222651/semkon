@@ -1,21 +1,20 @@
 import io
 import json
 import sys
-from loguru import logger
 from pathlib import Path
-from typing import Iterable
+from typing import Sequence
 
-from pydeps.pydeps import pydeps
+from loguru import logger
 from pydeps import cli
+from pydeps.pydeps import pydeps
 
 
 def get_deps_rec(
-    repo_directory: Path, package_directory: Path, rel_paths: Iterable[Path]
+    repo_directory: Path, package_directory: Path, rel_paths: Sequence[Path]
 ) -> list[str]:
-    rel_paths_set = set(rel_paths)
     init_file = package_directory / "__init__.py"
     if init_file.exists() and init_file.is_file():
-        if init_file.relative_to(repo_directory) in rel_paths_set:
+        if init_file.relative_to(repo_directory) in rel_paths:
             deps = get_deps(repo_directory, package_directory, rel_paths)
             if deps:
                 return [deps]
@@ -33,7 +32,7 @@ def get_deps_rec(
 
 
 def get_deps(
-    repo_directory: Path, package_directory: Path, rel_paths: Iterable[Path]
+    repo_directory: Path, package_directory: Path, rel_paths: Sequence[Path]
 ) -> str | None:
     abs_paths = [repo_directory / p for p in rel_paths]
 

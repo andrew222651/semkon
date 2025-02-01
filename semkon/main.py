@@ -2,11 +2,12 @@
 
 import sys
 from pathlib import Path
-from typing import Annotated, Iterable, Literal
+from typing import Annotated, Literal, Sequence
 
 import chromadb
 import openai
 import typer
+from chromadb.api import ClientAPI
 from loguru import logger
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
@@ -16,7 +17,6 @@ from .properties import extract_theorem_ids
 from .python_deps import get_deps_rec
 
 
-MAX_FILES = 1_000
 # o1-preview and o1 gave good results. everything else was bad (deepseek, claude, gpt-4o, gemini, o3-mini)
 MODEL = "o1"
 
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
 
 
-settings = Settings()
+settings = Settings()  # type: ignore
 
 openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
 
@@ -73,15 +73,18 @@ class Linter:
     def __init__(
         self,
         directory: Path,
-        max_messages: int = 999,
-        min_length_to_exclude_full_files: int = 100_000,
+        max_messages: int,
+        min_length_to_exclude_full_files: int,
+        max_files: int,
     ):
-        self._directory = directory
-        self._rel_paths = get_rel_paths(directory)
-        if len(self._rel_paths) > MAX_FILES:
+        self._directory: Path = directory
+        self._rel_paths: list[Path] = get_rel_paths(directory)
+        if len(self._rel_paths) > max_files:
             raise ValueError(f"Too many files: {len(self._rel_paths)}")
-        self._chroma_client = chromadb.Client()
-        self._collection = self._chroma_client.create_collection("codebase")
+        self._chroma_client: ClientAPI = chromadb.Client()
+        self._collection: chromadb.Collection = (
+            self._chroma_client.create_collection("codebase")
+        )
 
         documents = [
             (directory / rel_path).read_text() for rel_path in self._rel_paths
@@ -96,12 +99,9 @@ class Linter:
                 self._theorems.append(Theorem(rel_path=p, theorem_id=id_))
 
         self._max_messages = max_messages
-        self._min_length_to_exclude_full_files = (
-            min_length_to_exclude_full_files
-        )
         self._exclude_full_files = (
             sum(len(doc) for doc in documents)
-            >= self._min_length_to_exclude_full_files
+            >= min_length_to_exclude_full_files
         )
 
         python_deps = "\n".join(
@@ -116,7 +116,6 @@ class Linter:
         else:
             self._python_deps_text = ""
 
-
     def _build_initial_message(self, theorem: Theorem) -> str:
         if not self._exclude_full_files:
             return f"""The following is a listing of all files in a codebase:
@@ -128,13 +127,13 @@ The file {theorem.rel_path} contains one or more propositions
 about the codebase. The proposition we are interested in starts
 with "::: {{.theorem #{theorem.theorem_id}}}", and is followed by a proof.
 
-In your response,
-state whether the proof (not the proposition) is correct. By "correct", we mean very high confidence that
-the proof does in fact prove the proposition and that the proof is supported by what
-the code does. Mark the proof as "incorrect" if you understand it and the code but
-the proof is wrong. Use "unknown" if e.g. you don't 100%
-know how an external library works, or the proof needs more detail. Skeptically and
-rigorously check every assumption with references to the code.
+In your response, state whether the proof (not the proposition) is correct. By
+"correct", we mean very high confidence that the proof does in fact prove the
+proposition and that the proof is supported by what the code does. Mark the
+proof as "incorrect" if you understand it and the code but the proof is wrong.
+Use "unknown" if e.g. you don't 100% know how an external library works, or the
+proof needs more detail. Skeptically and rigorously check every assumption with
+references to the code.
         
 
 File contents:
@@ -158,28 +157,28 @@ Your responses in this conversation can be one of the following.
 
 1. Request files
 
-In this response, you may request to see additional files from the codebase
-in order to ultimately determine whether the proof is correct. They will
-be provided to you in the next message. You will have the opportunity to request
-further files if needed, and we will repeat this process until you are
-ready to make a final determination.
+In this response, you may request to see additional files from the codebase in
+order to ultimately determine whether the proof is correct. They will be
+provided to you in the next message. You will have the opportunity to request
+further files if needed, and we will repeat this process until you are ready to
+make a final determination.
 
 2. Correctness verdict
 
-In this response,
-state whether the proof is correct. By "correct", we mean very high confidence that
-the proof does in fact prove the proposition and that the proof is supported by what
-the code does. Mark the proof as "incorrect" if you understand it and the code but
-the proof is wrong. Use "unknown" if e.g. you don't 100%
-know how an external library works, or the proof needs more detail. Skeptically and
-rigorously check every assumption with references to the code.
-Use this response if you have seen enough of the codebase to make a determination.
+In this response, state whether the proof is correct. By "correct", we mean very
+high confidence that the proof does in fact prove the proposition and that the
+proof is supported by what the code does. Mark the proof as "incorrect" if you
+understand it and the code but the proof is wrong. Use "unknown" if e.g. you
+don't 100% know how an external library works, or the proof needs more detail.
+Skeptically and rigorously check every assumption with references to the code.
+(Use this response only if you have seen enough of the codebase to make a
+determination.)
 
 File contents:
 {self._format_file(theorem.rel_path)}
             """
 
-    def _build_subsequent_message(self, files_to_show: Iterable[Path]) -> str:
+    def _build_subsequent_message(self, files_to_show: Sequence[Path]) -> str:
         return f"""The requested files are given below.
 
 {"\n".join(self._format_file(p) for p in files_to_show)}
@@ -217,8 +216,12 @@ File contents:
                 .choices[0]
                 .message
             )
+            if resp_msg.content is None:
+                raise RuntimeError("No response from LLM")
             logger.debug(resp_msg.content)
             messages.append({"role": "assistant", "content": resp_msg.content})
+            if resp_msg.parsed is None:
+                raise RuntimeError("No response from LLM")
             response = resp_msg.parsed.data
 
             if isinstance(response, CorrectnessExplanation):
@@ -228,15 +231,16 @@ File contents:
                     explanation=response.explanation,
                 )
             else:
-                files_requested = {Path(p) for p in response.files_requested}
-                files_requested = (all_files & files_requested) - files_shown
+                files_requested = (
+                    all_files & {Path(p) for p in response.files_requested}
+                ) - files_shown
                 files_shown.update(files_requested)
 
                 if not files_requested:
                     raise RuntimeError("Invalid response")
 
                 subsequent_message = self._build_subsequent_message(
-                    files_requested
+                    list(files_requested)
                 )
                 logger.debug(subsequent_message)
                 messages.append(
@@ -260,10 +264,27 @@ def main(
             resolve_path=True,
         ),
     ] = Path("."),
+    max_files: Annotated[
+        int, typer.Option(help="Max number of files in the codebase")
+    ] = 1_000,
+    max_messages: Annotated[
+        int,
+        typer.Option(
+            help="Max number of messages in each LLM conversation before aborting"
+        ),
+    ] = 50,
+    min_length_to_exclude_full_files: Annotated[
+        int,
+        typer.Option(
+            help="Min size of codebase (in characters) such that we do not include all file contents in the initial prompt"
+        ),
+    ] = 100_000,
 ):
     linter = Linter(
         directory=directory,
-        min_length_to_exclude_full_files=0,
+        max_files=max_files,
+        max_messages=max_messages,
+        min_length_to_exclude_full_files=min_length_to_exclude_full_files,
     )
     for result in linter.check_proofs():
         print(result)
@@ -273,6 +294,6 @@ def cli() -> int:
     typer.run(main)
     return 0
 
+
 if __name__ == "__main__":
     exit(cli())
-
