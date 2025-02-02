@@ -291,15 +291,18 @@ def main(
         min_length_to_exclude_full_files=min_length_to_exclude_full_files,
         filter_paths=filter_path or [],
     )
+    results = linter.check_proofs()
     print(
         json.dumps(
-            [
-                result.model_dump(mode="json")
-                for result in linter.check_proofs()
-            ],
+            [result.model_dump(mode="json") for result in results],
             indent=2,
         )
     )
+    if any(
+        result.correctness_explanation.correctness != "correct"
+        for result in results
+    ):
+        exit(1)
 
 
 def cli() -> int:
