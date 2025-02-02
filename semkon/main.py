@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 
+import json
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal, Sequence
 
 import chromadb
-import openai
 import typer
 from chromadb.api import ClientAPI
 from loguru import logger
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
 
+from .clients import openai_client
+from .code_quoting import format_file
 from .file_filters import get_rel_paths
-from .properties import extract_theorem_ids
+from .properties import extract_propositions
 from .python_deps import get_deps_rec
-
 
 # o1-preview and o1 gave good results. everything else was bad (deepseek,
 # claude, gpt-4o, gemini, o3-mini).
@@ -28,22 +28,9 @@ logger.remove()
 logger.add(sink=sys.stderr, level="DEBUG")
 
 
-class Settings(BaseSettings):
-    OPENAI_API_KEY: str
-
-
-settings = Settings()  # type: ignore
-
-openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-
-
-class PointOfInterest(BaseModel):
-    pass
-
-
-class Theorem(PointOfInterest):
+class PropertyLocation(BaseModel):
     rel_path: Path
-    theorem_id: str
+    line_num: int
 
 
 class CorrectnessExplanation(BaseModel):
@@ -63,17 +50,11 @@ class FullFilesIncludedResponse(BaseModel):
     data: CorrectnessExplanation
 
 
-class ProofCheckResult(CorrectnessExplanation):
-    theorem_id: str
-
+class ProofCheckResult(BaseModel):
+    property_location: PropertyLocation
+    correctness_explanation: CorrectnessExplanation
 
 class Linter:
-    def _format_file(self, rel_path: Path) -> str:
-        return f"""================
-{rel_path}
-================
-{(self._directory / rel_path).read_text()}"""
-
     def __init__(
         self,
         directory: Path,
@@ -96,11 +77,16 @@ class Linter:
         ids = [str(rel_path) for rel_path in self._rel_paths]
         self._collection.add(documents=documents, ids=ids)
 
-        self._theorems = []
+        self._property_locations = []
         for p in self._rel_paths:
-            ids = extract_theorem_ids((directory / p).read_text())
-            for id_ in ids:
-                self._theorems.append(Theorem(rel_path=p, theorem_id=id_))
+            props = extract_propositions((directory / p).read_text())
+            for prop in props:
+                self._property_locations.append(
+                    PropertyLocation(rel_path=p, line_num=prop.line_num)
+                )
+                logger.debug(f"Found property @ {p}:{prop.line_num}")
+                logger.debug(f"Prop: {prop.statement}")
+        exit()  # JFT
 
         self._max_messages = max_messages
         self._exclude_full_files = (
@@ -120,16 +106,16 @@ class Linter:
         else:
             self._python_deps_text = ""
 
-    def _build_initial_message(self, theorem: Theorem) -> str:
+    def _build_initial_message(self, property_location: PropertyLocation) -> str:
         if not self._exclude_full_files:
             return f"""The following is a listing of all files in a codebase:
 {"\n".join(str(p) for p in self._rel_paths)}
 
 At the end of this message is a listing of all file contents.
 
-The file {theorem.rel_path} contains one or more propositions
-about the codebase. The proposition we are interested in starts
-with "::: {{.theorem #{theorem.theorem_id}}}", and is followed by a proof.
+The file {property_location.rel_path} contains one or more propositions
+about the codebase. The proposition we are interested in is on line
+{property_location.line_num}, and is followed by a proof.
 
 In your response, state whether the proof (not the proposition) is correct. By
 "correct", we mean very high confidence that each step of the proof is valid,
@@ -141,7 +127,7 @@ rigorously check every claim with references to the code.
         
 
 File contents:
-{"\n".join(self._format_file(p) for p in self._rel_paths)}
+{"\n".join(format_file((self._directory / p).read_text(), rel_path=p) for p in self._rel_paths)}
             """
         else:
             return f"""The following is a listing of all files in a codebase:
@@ -149,10 +135,10 @@ File contents:
 
 {self._python_deps_text}
 
-At the end of this message is a listing of the contents of {theorem.rel_path}.
+At the end of this message is a listing of the contents of {property_location.rel_path}.
 This file contains one or more propositions
-about the codebase. The proposition we are interested in starts
-with "::: {{.theorem #{theorem.theorem_id}}}", and is followed by a proof.
+about the codebase. The proposition we are interested in is on line
+{property_location.line_num}, and is followed by a proof.
 
 The goal of this conversation is to determine whether the proof 
 (not the proposition) is correct.
@@ -179,25 +165,27 @@ with references to the code. (Use this response only if you have seen enough of
 the codebase to make a determination.)
 
 File contents:
-{self._format_file(theorem.rel_path)}
+{format_file((self._directory / property_location.rel_path).read_text(), rel_path=property_location.rel_path)}
             """
 
     def _build_subsequent_message(self, files_to_show: Sequence[Path]) -> str:
         return f"""The requested files are given below.
 
-{"\n".join(self._format_file(p) for p in files_to_show)}
+{"\n".join(format_file((self._directory / p).read_text(), rel_path=p) for p in files_to_show)}
         """
 
     def check_proofs(self) -> list[ProofCheckResult]:
         return [
-            self.check_proof(theorem.theorem_id) for theorem in self._theorems
+            self.check_proof(property_location)
+            for property_location in self._property_locations
         ]
 
-    def check_proof(self, theorem_id: str) -> ProofCheckResult:
-        theorem = next(t for t in self._theorems if t.theorem_id == theorem_id)
+    def check_proof(
+        self, property_location: PropertyLocation
+    ) -> ProofCheckResult:
         files_shown = set()
         all_files = set(self._rel_paths)
-        initial_message = self._build_initial_message(theorem)
+        initial_message = self._build_initial_message(property_location)
         logger.debug(initial_message)
         messages = [
             {
@@ -207,16 +195,14 @@ File contents:
         ]
 
         for _ in range(self._max_messages):
-            resp = (
-                openai_client.beta.chat.completions.parse(
-                    **MODEL,
-                    messages=messages,  # type: ignore
-                    response_format=(
-                        FullFilesExcludedResponse
-                        if self._exclude_full_files
-                        else FullFilesIncludedResponse
-                    ),
-                )
+            resp = openai_client.beta.chat.completions.parse(
+                **MODEL,
+                messages=messages,  # type: ignore
+                response_format=(
+                    FullFilesExcludedResponse
+                    if self._exclude_full_files
+                    else FullFilesIncludedResponse
+                ),
             )
             logger.debug(f"Token usage: {resp.usage}")
 
@@ -224,16 +210,17 @@ File contents:
             if resp_message.content is None:
                 raise RuntimeError("No response from LLM")
             logger.debug(resp_message.content)
-            messages.append({"role": "assistant", "content": resp_message.content})
+            messages.append(
+                {"role": "assistant", "content": resp_message.content}
+            )
             if resp_message.parsed is None:
                 raise RuntimeError("No response from LLM")
             response_data = resp_message.parsed.data
 
             if isinstance(response_data, CorrectnessExplanation):
                 return ProofCheckResult(
-                    theorem_id=theorem_id,
-                    correctness=response_data.correctness,
-                    explanation=response_data.explanation,
+                    property_location=property_location,
+                    correctness_explanation=response_data,
                 )
             else:
                 files_requested = (
@@ -291,8 +278,15 @@ def main(
         max_messages=max_messages,
         min_length_to_exclude_full_files=min_length_to_exclude_full_files,
     )
-    for result in linter.check_proofs():
-        print(result)
+    print(
+        json.dumps(
+            [
+                result.model_dump(mode="json")
+                for result in linter.check_proofs()
+            ],
+            indent=2,
+        )
+    )
 
 
 def cli() -> int:

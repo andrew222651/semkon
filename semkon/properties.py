@@ -1,27 +1,41 @@
 import re
 
+from loguru import logger
+from pydantic import BaseModel
 
-def extract_theorem_ids(text: str) -> list[str]:
-    """Extract theorem IDs from theorem-proof block pairs.
+from .clients import openai_client
+from .code_quoting import format_file
 
-    Looks for patterns like:
-    ::: {.theorem #id}
-    ... (content can contain colons, just not three in a row)
-    :::
-    ::: {.proof}
-    ... (content can contain colons, just not three in a row)
-    :::
 
-    Returns a list of theorem IDs that are followed by proof blocks.
-    """
-    # Pattern matches a complete theorem block followed by a complete proof block
-    pattern = (
-        r"::: \{\.theorem #([^\s}]+)\}"  # theorem start with ID capture
-        r"(?:(?!:::).)*"  # content until next :::
-        r":::"  # theorem end
-        r"\s*"  # whitespace between blocks
-        r"::: \{\.proof\}"  # proof start
-        r"(?:(?!:::).)*"  # content until next :::
-        r":::"  # proof end
+class Proposition(BaseModel):
+    line_num: int
+    statement: str
+    proof: str
+
+
+class PropositionsResponse(BaseModel):
+    data: list[Proposition]
+
+
+def extract_propositions(content: str) -> list[Proposition]:
+    if not re.search(r"\bproof\b", content, re.IGNORECASE):
+        return []
+
+    initial_message = f"""The following file is taken from a repository of source code.
+If it contains developer documentation, it may contain zero or more
+propositions that have something to do with the codebase. They will be written in natural
+language, not a programming language. The propositions may be called "properties", "theorems", etc.
+They will be in a mathematical style, with a statement and a proof.
+Please extract them. Only get propositions that have associated proofs.
+
+{format_file(content)}"""
+    logger.debug(initial_message)
+
+    resp = openai_client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": initial_message}],
+        response_format=PropositionsResponse,
     )
-    return re.findall(pattern, text, re.DOTALL)
+    if resp.choices[0].message.parsed is None:
+        return []
+    return resp.choices[0].message.parsed.data
