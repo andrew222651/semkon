@@ -6,9 +6,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Sequence
 
 import chromadb
+import tiktoken
 import typer
 from chromadb.api import ClientAPI
 from loguru import logger
+from openai import BadRequestError, LengthFinishReasonError
 from pydantic import BaseModel
 
 from .clients import openai_client
@@ -23,6 +25,9 @@ MODEL: dict[str, Any] = {
     "model": "o1",
     "reasoning_effort": "medium",
 }
+
+# https://github.com/openai/tiktoken/issues/337#issuecomment-2392465999
+enc = tiktoken.encoding_for_model("gpt-4o")
 
 logger.remove()
 logger.add(sink=sys.stderr, level="DEBUG")
@@ -50,9 +55,13 @@ class FullFilesIncludedResponse(BaseModel):
     data: CorrectnessExplanation
 
 
+class Failure(BaseModel):
+    msg: str
+
+
 class ProofCheckResult(BaseModel):
     property_location: PropertyLocation
-    correctness_explanation: CorrectnessExplanation
+    correctness_explanation: CorrectnessExplanation | Failure
 
 
 class Linter:
@@ -64,6 +73,8 @@ class Linter:
         max_files: int,
         filter_paths: list[str],
         property_filter: str | None,
+        max_tokens_total: int,
+        max_tokens_per_property: int,
     ):
         self._directory: Path = directory
         self._rel_paths: list[Path] = get_rel_paths(
@@ -86,7 +97,9 @@ class Linter:
 
         self._property_locations = []
         for p in self._rel_paths:
-            props = extract_propositions((directory / p).read_text(), filter=property_filter)
+            props = extract_propositions(
+                (directory / p).read_text(), filter=property_filter
+            )
             for prop in props:
                 self._property_locations.append(
                     PropertyLocation(rel_path=p, line_num=prop.line_num)
@@ -110,6 +123,9 @@ class Linter:
 """
         else:
             self._python_deps_text = ""
+
+        self._max_tokens_total = max_tokens_total
+        self._max_tokens_per_property = max_tokens_per_property
 
     def _build_initial_message(
         self, property_location: PropertyLocation
@@ -182,16 +198,31 @@ File contents:
         """
 
     def check_proofs(self) -> list[ProofCheckResult]:
-        return [
-            self.check_proof(property_location)
-            for property_location in self._property_locations
-        ]
+        ret = []
+        tokens_used = 0
+        for property_location in self._property_locations:
+            pcr, tokens_just_used = self.check_proof(
+                property_location,
+                min(
+                    self._max_tokens_per_property,
+                    self._max_tokens_total - tokens_used,
+                ),
+            )
+            ret.append(pcr)
+            tokens_used += tokens_just_used
+
+        return ret
 
     def check_proof(
-        self, property_location: PropertyLocation
-    ) -> ProofCheckResult:
+        self, property_location: PropertyLocation, max_tokens: int
+    ) -> tuple[ProofCheckResult, int]:
         files_shown = set()
         all_files = set(self._rel_paths)
+
+        input_tokens_in_messages = 0
+        input_tokens_sent = 0
+        completion_tokens_used = 0
+
         initial_message = self._build_initial_message(property_location)
         logger.debug(initial_message)
         messages = [
@@ -200,18 +231,46 @@ File contents:
                 "content": initial_message,
             }
         ]
+        input_tokens_in_messages += len(enc.encode(initial_message))
 
         for _ in range(self._max_messages):
-            resp = openai_client.beta.chat.completions.parse(
-                **MODEL,
-                messages=messages,  # type: ignore
-                response_format=(
-                    FullFilesExcludedResponse
-                    if self._exclude_full_files
-                    else FullFilesIncludedResponse
-                ),
+            max_completion_tokens = (
+                max_tokens - completion_tokens_used - input_tokens_in_messages
             )
+            if max_completion_tokens <= 0:
+                return (
+                    ProofCheckResult(
+                        property_location=property_location,
+                        correctness_explanation=Failure(
+                            msg="Token limit reached"
+                        ),
+                    ),
+                    completion_tokens_used + input_tokens_sent,
+                )
+            try:
+                resp = openai_client.beta.chat.completions.parse(
+                    **MODEL,
+                    max_completion_tokens=max_completion_tokens,
+                    messages=messages,  # type: ignore
+                    response_format=(
+                        FullFilesExcludedResponse
+                        if self._exclude_full_files
+                        else FullFilesIncludedResponse
+                    ),
+                )
+            except (BadRequestError, LengthFinishReasonError) as e:
+                return (
+                    ProofCheckResult(
+                        property_location=property_location,
+                        correctness_explanation=Failure(msg=str(e)),
+                    ),
+                    max_tokens,
+                )
             logger.debug(f"Token usage: {resp.usage}")
+            if resp.usage is None:
+                raise RuntimeError("No token usage available")
+            completion_tokens_used += resp.usage.completion_tokens
+            input_tokens_sent = input_tokens_in_messages
 
             resp_message = resp.choices[0].message
             if resp_message.content is None:
@@ -225,9 +284,12 @@ File contents:
             response_data = resp_message.parsed.data
 
             if isinstance(response_data, CorrectnessExplanation):
-                return ProofCheckResult(
-                    property_location=property_location,
-                    correctness_explanation=response_data,
+                return (
+                    ProofCheckResult(
+                        property_location=property_location,
+                        correctness_explanation=response_data,
+                    ),
+                    completion_tokens_used + input_tokens_sent,
                 )
             else:
                 files_requested = (
@@ -248,6 +310,7 @@ File contents:
                         "content": subsequent_message,
                     }
                 )
+                input_tokens_in_messages += len(enc.encode(subsequent_message))
         else:
             raise TimeoutError("No result after max messages")
 
@@ -290,6 +353,14 @@ def main(
             help="Natural language instructions on which properties to check."
         ),
     ] = None,
+    max_tokens_total: Annotated[
+        int,
+        typer.Option(help="Max number of tokens to use"),
+    ] = 1_000_000,
+    max_tokens_per_property: Annotated[
+        int,
+        typer.Option(help="Max number of tokens to use per property"),
+    ] = 1_000_000,
 ):
     linter = Linter(
         directory=directory,
@@ -298,6 +369,8 @@ def main(
         min_length_to_exclude_full_files=min_length_to_exclude_full_files,
         filter_paths=filter_path or [],
         property_filter=property_filter,
+        max_tokens_total=max_tokens_total,
+        max_tokens_per_property=max_tokens_per_property,
     )
     results = linter.check_proofs()
     print(
@@ -307,7 +380,8 @@ def main(
         )
     )
     if any(
-        result.correctness_explanation.correctness != "correct"
+        isinstance(result.correctness_explanation, Failure)
+        or result.correctness_explanation.correctness != "correct"
         for result in results
     ):
         exit(1)

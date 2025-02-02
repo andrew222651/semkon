@@ -13,6 +13,7 @@ dependencies = [
     "pydantic==2.10.*",
     "pydantic-settings",
     "pydeps==3.0.*",
+    "tiktoken==0.8.*",
     "typer==0.15.*",
 ]
 version = "0.0.0"

@@ -17,7 +17,9 @@ class PropositionsResponse(BaseModel):
     data: list[Proposition]
 
 
-def extract_propositions(content: str, filter: str | None = None) -> list[Proposition]:
+def extract_propositions(
+    content: str, filter: str | None = None
+) -> list[Proposition]:
     if not re.search(r"\bproof\b", content, re.IGNORECASE):
         return []
 

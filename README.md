@@ -7,7 +7,7 @@ Features:
 * automatically finds property+proof blocks in your code
   * see [example](tests/example_repo/example_repo/foo.py)
 * recognizes stated "axioms"
-* configurable file exclusion
+* configurable file exclusion, token limits
 
 Requires OpenAI API key.
 
