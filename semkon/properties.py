@@ -22,11 +22,16 @@ def extract_propositions(content: str) -> list[Proposition]:
         return []
 
     initial_message = f"""The following file is taken from a repository of source code.
-If it contains developer documentation, it may contain zero or more
-propositions that have something to do with the codebase. They will be written in natural
-language, not a programming language. The propositions may be called "properties", "theorems", etc.
-They will be in a mathematical style, with a statement and a proof.
-Please extract them. Only get propositions that have associated proofs.
+It may (or may not) contain one or more formal propositions that have something to do with the codebase.
+These would be written as developer documentation. They may be called "properties", "theorems", etc.
+Extract all such propositions that satisfy the following criteria:
+* They are written in natural language, not a programming language.
+* They are in a mathematical style, like a computer scientist would write.
+* They are explicitly labeled as a "property" or "theorem" or similar,
+  and have an associated explicitly-labeled proof.
+
+For example, there may be propositions about running times,
+correctness, or auxiliary facts.
 
 {format_file(content)}"""
     logger.debug(initial_message)
