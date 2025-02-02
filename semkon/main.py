@@ -54,6 +54,7 @@ class ProofCheckResult(BaseModel):
     property_location: PropertyLocation
     correctness_explanation: CorrectnessExplanation
 
+
 class Linter:
     def __init__(
         self,
@@ -93,19 +94,20 @@ class Linter:
             >= min_length_to_exclude_full_files
         )
 
-        python_deps = "\n".join(
-            get_deps_rec(self._directory, self._directory, self._rel_paths)
+        python_deps = get_deps_rec(
+            self._directory, self._directory, self._rel_paths
         )
         if python_deps:
             self._python_deps_text = f"""Here is the dependency graph of the codebase:
-{python_deps}
-
+{json.dumps(python_deps, indent=2)}
 
 """
         else:
             self._python_deps_text = ""
 
-    def _build_initial_message(self, property_location: PropertyLocation) -> str:
+    def _build_initial_message(
+        self, property_location: PropertyLocation
+    ) -> str:
         correctness_blurb = """By "correct", we mean very high confidence that each step of the proof is valid,
 the proof does in fact prove the proposition, and that the proof is supported by
 what the code does. Mark the proof as "incorrect" if you understand it and the

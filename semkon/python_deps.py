@@ -2,7 +2,7 @@ import io
 import json
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from loguru import logger
 from pydeps import cli
@@ -11,30 +11,44 @@ from pydeps.pydeps import pydeps
 
 def get_deps_rec(
     repo_directory: Path, package_directory: Path, rel_paths: Sequence[Path]
-) -> list[str]:
+) -> dict[str, Any]:
     init_file = package_directory / "__init__.py"
     if init_file.exists() and init_file.is_file():
         if init_file.relative_to(repo_directory) in rel_paths:
-            deps = get_deps(repo_directory, package_directory, rel_paths)
-            if deps:
-                return [deps]
-            else:
-                return []
+            ret = get_deps(repo_directory, package_directory, rel_paths)
         else:
-            return []
+            ret = dict()
     else:
-        ret = []
+        ret = dict()
         for child_dir in package_directory.iterdir():
             if child_dir.is_dir():
                 deps = get_deps_rec(repo_directory, child_dir, rel_paths)
-                ret.extend(deps)
-        return ret
+                for k, v in deps.items():
+                    if k in ret:
+                        if ret[k]["path"] != v["path"]:
+                            logger.debug("Cannot understand dependency graph")
+                            return dict()
+                        ret[k]["imported_by"] = list(
+                            set(
+                                ret[k].get("imported_by", [])
+                                + v.get("imported_by", [])
+                            )
+                        )
+                        ret[k]["imports"] = list(
+                            set(
+                                ret[k].get("imports", []) + v.get("imports", [])
+                            )
+                        )
+                    else:
+                        ret[k] = v
+
+    return dict(sorted(ret.items(), key=lambda item: item[0]))
 
 
 def get_deps(
     repo_directory: Path, package_directory: Path, rel_paths: Sequence[Path]
-) -> str | None:
-    abs_paths = [repo_directory / p for p in rel_paths]
+) -> dict[str, Any]:
+    abs_paths = {repo_directory / p for p in rel_paths}
 
     old_stdout = sys.stdout
     new_stdout = io.StringIO()
@@ -58,17 +72,15 @@ def get_deps(
         if not v["path"]:
             continue
         p = Path(v["path"])
-        if p in abs_paths:
-            v["path"] = str(p.relative_to(repo_directory))
-            if "imported_by" in v:
-                v["imported_by"] = [
-                    ib for ib in v["imported_by"] if ib != "__main__"
-                ]
-            del v["name"]
-            del v["bacon"]
-            filtered[k] = v
+        if p not in abs_paths:
+            continue
+        v["path"] = str(p.relative_to(repo_directory))
+        if "imported_by" in v:
+            v["imported_by"] = [
+                ib for ib in v["imported_by"] if ib != "__main__"
+            ]
+        del v["name"]
+        del v["bacon"]
+        filtered[k] = v
 
-    if filtered:
-        return json.dumps(filtered, indent=2)
-    else:
-        return None
+    return filtered
