@@ -63,6 +63,7 @@ class Linter:
         min_length_to_exclude_full_files: int,
         max_files: int,
         filter_paths: list[str],
+        property_filter: str | None,
     ):
         self._directory: Path = directory
         self._rel_paths: list[Path] = get_rel_paths(
@@ -85,7 +86,7 @@ class Linter:
 
         self._property_locations = []
         for p in self._rel_paths:
-            props = extract_propositions((directory / p).read_text())
+            props = extract_propositions((directory / p).read_text(), filter=property_filter)
             for prop in props:
                 self._property_locations.append(
                     PropertyLocation(rel_path=p, line_num=prop.line_num)
@@ -283,6 +284,12 @@ def main(
             help="Path to exclude from the analysis in .gitignore format. Repeat as needed.",
         ),
     ] = None,
+    property_filter: Annotated[
+        str | None,
+        typer.Option(
+            help="Natural language instructions on which properties to check."
+        ),
+    ] = None,
 ):
     linter = Linter(
         directory=directory,
@@ -290,6 +297,7 @@ def main(
         max_messages=max_messages,
         min_length_to_exclude_full_files=min_length_to_exclude_full_files,
         filter_paths=filter_path or [],
+        property_filter=property_filter,
     )
     results = linter.check_proofs()
     print(
