@@ -62,11 +62,16 @@ class Linter:
         max_messages: int,
         min_length_to_exclude_full_files: int,
         max_files: int,
+        filter_paths: list[str],
     ):
         self._directory: Path = directory
-        self._rel_paths: list[Path] = get_rel_paths(directory)
+        self._rel_paths: list[Path] = get_rel_paths(
+            directory, filter_paths=filter_paths
+        )
         if len(self._rel_paths) > max_files:
             raise ValueError(f"Too many files: {len(self._rel_paths)}")
+        for p in self._rel_paths:
+            logger.debug(f"Found {p}")
         self._chroma_client: ClientAPI = chromadb.Client()
         self._collection: chromadb.Collection = (
             self._chroma_client.create_collection("codebase")
@@ -272,12 +277,19 @@ def main(
             help="Min size of codebase (in characters) such that we do not include all file contents in the initial prompt"
         ),
     ] = 100_000,
+    filter_path: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Path to exclude from the analysis in .gitignore format. Repeat as needed.",
+        ),
+    ] = None,
 ):
     linter = Linter(
         directory=directory,
         max_files=max_files,
         max_messages=max_messages,
         min_length_to_exclude_full_files=min_length_to_exclude_full_files,
+        filter_paths=filter_path or [],
     )
     print(
         json.dumps(
