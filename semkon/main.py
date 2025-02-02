@@ -19,12 +19,21 @@ from .file_filters import get_rel_paths
 from .properties import extract_propositions
 from .python_deps import get_deps_rec
 
+
+MAX_FILES_REQUESTED = 5
+# more tokens get sent than we count so this supposed to be
+# an upper bound on the extra (just a guess)
+MESSAGE_ENVELOPE_TOKENS = 300
+
 # o1-preview and o1 gave good results. everything else was bad (deepseek,
 # claude, gpt-4o, gemini, o3-mini).
 MODEL: dict[str, Any] = {
     "model": "o1",
     "reasoning_effort": "medium",
 }
+# I know it's supposed to be 200k but sometimes I got 400s saying it
+# can only do 100k.
+MAX_CONTEXT_LENGTH = 100_000
 
 # https://github.com/openai/tiktoken/issues/337#issuecomment-2392465999
 enc = tiktoken.encoding_for_model("gpt-4o")
@@ -73,8 +82,8 @@ class Linter:
         max_files: int,
         filter_paths: list[str],
         property_filter: str | None,
-        max_tokens_total: int,
-        max_tokens_per_property: int,
+        max_tokens_total: int | None,
+        max_tokens_per_property: int | None,
     ):
         self._directory: Path = directory
         self._rel_paths: list[Path] = get_rel_paths(
@@ -178,7 +187,8 @@ In this response, you may request to see additional files from the codebase in
 order to ultimately determine whether the proof is correct. They will be
 provided to you in the next message. You will have the opportunity to request
 further files if needed, and we will repeat this process until you are ready to
-make a final determination.
+make a final determination. You can request up to {MAX_FILES_REQUESTED} files
+at a time.
 
 2. Correctness verdict
 
@@ -201,12 +211,28 @@ File contents:
         ret = []
         tokens_used = 0
         for property_location in self._property_locations:
-            pcr, tokens_just_used = self.check_proof(
-                property_location,
-                min(
+            if (
+                self._max_tokens_per_property is None
+                and self._max_tokens_total is None
+            ):
+                max_tokens = None
+            elif self._max_tokens_per_property is None:
+                max_tokens = min(
+                    self._max_tokens_total - tokens_used, MAX_CONTEXT_LENGTH
+                )
+            elif self._max_tokens_total is None:
+                max_tokens = min(
+                    self._max_tokens_per_property, MAX_CONTEXT_LENGTH
+                )
+            else:
+                max_tokens = min(
                     self._max_tokens_per_property,
                     self._max_tokens_total - tokens_used,
-                ),
+                    MAX_CONTEXT_LENGTH,
+                )
+            pcr, tokens_just_used = self.check_proof(
+                property_location,
+                max_tokens,
             )
             ret.append(pcr)
             tokens_used += tokens_just_used
@@ -214,7 +240,7 @@ File contents:
         return ret
 
     def check_proof(
-        self, property_location: PropertyLocation, max_tokens: int
+        self, property_location: PropertyLocation, max_tokens: int | None
     ) -> tuple[ProofCheckResult, int]:
         files_shown = set()
         all_files = set(self._rel_paths)
@@ -231,26 +257,38 @@ File contents:
                 "content": initial_message,
             }
         ]
-        input_tokens_in_messages += len(enc.encode(initial_message))
 
         for _ in range(self._max_messages):
-            max_completion_tokens = (
-                max_tokens - completion_tokens_used - input_tokens_in_messages
+            input_tokens_in_messages = sum(
+                len(enc.encode(m["content"])) + MESSAGE_ENVELOPE_TOKENS
+                for m in messages
+                if m["role"] == "user"
             )
-            if max_completion_tokens <= 0:
-                return (
-                    ProofCheckResult(
-                        property_location=property_location,
-                        correctness_explanation=Failure(
-                            msg="Token limit reached"
-                        ),
-                    ),
-                    completion_tokens_used + input_tokens_sent,
+            if max_tokens is None:
+                max_completion_tokens_key = dict()
+            else:
+                max_completion_tokens = (
+                    max_tokens
+                    - completion_tokens_used
+                    - input_tokens_in_messages
                 )
+                if max_completion_tokens <= 0:
+                    return (
+                        ProofCheckResult(
+                            property_location=property_location,
+                            correctness_explanation=Failure(
+                                msg="Token limit reached"
+                            ),
+                        ),
+                        completion_tokens_used + input_tokens_sent,
+                    )
+                max_completion_tokens_key = {
+                    "max_completion_tokens": max_completion_tokens,
+                }
             try:
                 resp = openai_client.beta.chat.completions.parse(
                     **MODEL,
-                    max_completion_tokens=max_completion_tokens,
+                    **max_completion_tokens_key,  # type: ignore
                     messages=messages,  # type: ignore
                     response_format=(
                         FullFilesExcludedResponse
@@ -264,7 +302,8 @@ File contents:
                         property_location=property_location,
                         correctness_explanation=Failure(msg=str(e)),
                     ),
-                    max_tokens,
+                    # a guess
+                    max_tokens or MAX_CONTEXT_LENGTH,
                 )
             logger.debug(f"Token usage: {resp.usage}")
             if resp.usage is None:
@@ -292,16 +331,20 @@ File contents:
                     completion_tokens_used + input_tokens_sent,
                 )
             else:
-                files_requested = (
-                    all_files & {Path(p) for p in response_data.files_requested}
-                ) - files_shown
+                files_requested = sorted(
+                    (
+                        all_files
+                        & {Path(p) for p in response_data.files_requested}
+                    )
+                    - files_shown
+                )[:MAX_FILES_REQUESTED]
                 files_shown.update(files_requested)
 
                 if not files_requested:
                     raise RuntimeError("Invalid response")
 
                 subsequent_message = self._build_subsequent_message(
-                    list(files_requested)
+                    files_requested
                 )
                 logger.debug(subsequent_message)
                 messages.append(
@@ -310,7 +353,6 @@ File contents:
                         "content": subsequent_message,
                     }
                 )
-                input_tokens_in_messages += len(enc.encode(subsequent_message))
         else:
             raise TimeoutError("No result after max messages")
 
@@ -354,13 +396,15 @@ def main(
         ),
     ] = None,
     max_tokens_total: Annotated[
-        int,
-        typer.Option(help="Max number of tokens to use"),
-    ] = 1_000_000,
+        int | None,
+        typer.Option(help="Max number of tokens to use (approximate!)"),
+    ] = None,
     max_tokens_per_property: Annotated[
-        int,
-        typer.Option(help="Max number of tokens to use per property"),
-    ] = 1_000_000,
+        int | None,
+        typer.Option(
+            help="Max number of tokens to use per property (approximate!)"
+        ),
+    ] = None,
 ):
     linter = Linter(
         directory=directory,
