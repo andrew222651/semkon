@@ -86,7 +86,6 @@ class Linter:
                 )
                 logger.debug(f"Found property @ {p}:{prop.line_num}")
                 logger.debug(f"Prop: {prop.statement}")
-        exit()  # JFT
 
         self._max_messages = max_messages
         self._exclude_full_files = (
