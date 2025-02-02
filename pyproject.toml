@@ -47,7 +47,9 @@ useLibraryCodeForTypes = true
 strictListInference = true
 strictDictionaryInference = true
 strictSetInference = true
+exclude = ["tests/example_repo"]
 
 [tool.ruff]
 lint.select = ["F401"]
 line-length = 80
+
