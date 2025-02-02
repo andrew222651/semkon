@@ -106,6 +106,15 @@ class Linter:
             self._python_deps_text = ""
 
     def _build_initial_message(self, property_location: PropertyLocation) -> str:
+        correctness_blurb = """By "correct", we mean very high confidence that each step of the proof is valid,
+the proof does in fact prove the proposition, and that the proof is supported by
+what the code does. Mark the proof as "incorrect" if you understand it and the
+code but the proof is wrong. Use "unknown" if e.g. you don't 100% know how an
+external library works, or the proof needs more detail. Skeptically and
+rigorously check every claim with references to the code. If the proof
+references an explicitly-stated axiom (or "assumption", etc), you can assume
+that the axiom is correct."""
+
         if not self._exclude_full_files:
             return f"""The following is a listing of all files in a codebase:
 {"\n".join(str(p) for p in self._rel_paths)}
@@ -116,13 +125,8 @@ The file {property_location.rel_path} contains one or more propositions
 about the codebase. The proposition we are interested in is on line
 {property_location.line_num}, and is followed by a proof.
 
-In your response, state whether the proof (not the proposition) is correct. By
-"correct", we mean very high confidence that each step of the proof is valid,
-the proof does in fact prove the proposition, and that the proof is supported by
-what the code does. Mark the proof as "incorrect" if you understand it and the
-code but the proof is wrong. Use "unknown" if e.g. you don't 100% know how an
-external library works, or the proof needs more detail. Skeptically and
-rigorously check every claim with references to the code.
+In your response, state whether the proof (not the proposition) is correct.
+{correctness_blurb}
         
 
 File contents:
@@ -154,13 +158,9 @@ make a final determination.
 
 2. Correctness verdict
 
-In this response, state whether the proof is correct. By "correct", we mean very
-high confidence that each step of the proof is valid, the proof does in fact
-prove the proposition, and that the proof is supported by what the code does.
-Mark the proof as "incorrect" if you understand it and the code but the proof is
-wrong. Use "unknown" if e.g. you don't 100% know how an external library works,
-or the proof needs more detail. Skeptically and rigorously check every claim
-with references to the code. (Use this response only if you have seen enough of
+In this response, state whether the proof is correct.
+{correctness_blurb}
+(Use this response only if you have seen enough of
 the codebase to make a determination.)
 
 File contents:
