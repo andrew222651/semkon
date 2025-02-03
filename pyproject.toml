@@ -13,8 +13,11 @@ dependencies = [
     "pydantic==2.10.*",
     "pydantic-settings",
     "pydeps==3.0.*",
+    "RestrictedPython==8.0",
+    "sympy==1.13.*",
     "tiktoken==0.8.*",
     "typer==0.15.*",
+    "wrapt-timeout-decorator==1.5.*",
 ]
 version = "0.0.0"
 

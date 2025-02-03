@@ -8,6 +8,7 @@ Features:
   * see [example](tests/example_repo/example_repo/foo.py)
 * recognizes stated "axioms"
 * configurable file exclusion
+* can execute Python code (off by default)
 
 Requires OpenAI API key. Costs can be unpredictable so to be fully safe, use a
 project API key with a project budget limit.
