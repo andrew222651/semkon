@@ -10,7 +10,7 @@ import tiktoken
 import typer
 from chromadb.api import ClientAPI
 from loguru import logger
-from openai import BadRequestError, LengthFinishReasonError
+from openai import LengthFinishReasonError
 from pydantic import BaseModel
 
 from .clients import openai_client
@@ -20,19 +20,7 @@ from .properties import extract_propositions
 from .python_deps import get_deps_rec
 
 
-# Basically we have two methods to control the API usage:
-# * max tokens: approximate because we don't know exactly
-#   how many tokens we use
-# * how much work is done (also approximate)
-#   * limited set of properties
-#   * max messages per property
-#   * max files per message
-#   * max file size
-
 MAX_FILES_REQUESTED = 5
-# more tokens get sent than we count so this is supposed to be
-# an upper bound on the extra (just a guess)
-MESSAGE_ENVELOPE_TOKENS = 300
 
 # o1-preview and o1 gave good results. everything else was bad (deepseek,
 # claude, gpt-4o, gemini, o3-mini).
@@ -40,9 +28,8 @@ MODEL: dict[str, Any] = {
     "model": "o1",
     "reasoning_effort": "medium",
 }
-# I know it's supposed to be 200k but sometimes I got 400s saying it
-# can only do 100k.
-MAX_CONTEXT_LENGTH = 100_000
+MAX_CONTEXT_LENGTH = 200_000
+MAX_OUTPUT_LENGTH = 100_000
 
 # https://github.com/openai/tiktoken/issues/337#issuecomment-2392465999
 enc = tiktoken.encoding_for_model("gpt-4o")
@@ -78,6 +65,7 @@ class Failure(BaseModel):
 
 
 class ProofCheckResult(BaseModel):
+    tokens_used: int
     property_location: PropertyLocation
     correctness_explanation: CorrectnessExplanation | Failure
 
@@ -87,12 +75,10 @@ class Linter:
         self,
         directory: Path,
         max_messages: int,
-        min_length_to_exclude_full_files: int,
         max_files: int,
         filter_paths: list[str],
         property_filter: str | None,
-        max_tokens_total: int | None,
-        max_tokens_per_property: int | None,
+        always_exclude_full_files: bool,
     ):
         self._directory: Path = directory
         self._rel_paths: list[Path] = get_rel_paths(
@@ -102,11 +88,11 @@ class Linter:
             raise ValueError(f"Too many files: {len(self._rel_paths)}")
         for p in self._rel_paths:
             logger.debug(f"Found {p}")
+
         self._chroma_client: ClientAPI = chromadb.Client()
         self._collection: chromadb.Collection = (
             self._chroma_client.create_collection("codebase")
         )
-
         documents = [
             (directory / rel_path).read_text() for rel_path in self._rel_paths
         ]
@@ -116,19 +102,21 @@ class Linter:
         self._property_locations = []
         for p in self._rel_paths:
             props = extract_propositions(
-                (directory / p).read_text(), filter=property_filter
+                (directory / p).read_text(), filter=property_filter, rel_path=p
             )
             for prop in props:
                 self._property_locations.append(
                     PropertyLocation(rel_path=p, line_num=prop.line_num)
                 )
                 logger.debug(f"Found property @ {p}:{prop.line_num}")
-                logger.debug(f"Prop: {prop.statement}")
+                logger.debug(prop.statement)
 
         self._max_messages = max_messages
-        self._exclude_full_files = (
-            sum(len(doc) for doc in documents)
-            >= min_length_to_exclude_full_files
+
+        # only an approximate calculation
+        self._exclude_full_files = always_exclude_full_files or (
+            sum(len(enc.encode(doc)) for doc in documents)
+            >= MAX_CONTEXT_LENGTH - MAX_OUTPUT_LENGTH
         )
 
         python_deps = get_deps_rec(
@@ -141,9 +129,6 @@ class Linter:
 """
         else:
             self._python_deps_text = ""
-
-        self._max_tokens_total = max_tokens_total
-        self._max_tokens_per_property = max_tokens_per_property
 
     def _build_initial_message(
         self, property_location: PropertyLocation
@@ -218,48 +203,22 @@ File contents:
 
     def check_proofs(self) -> list[ProofCheckResult]:
         ret = []
-        tokens_used = 0
         for property_location in self._property_locations:
-            if (
-                self._max_tokens_per_property is None
-                and self._max_tokens_total is None
-            ):
-                max_tokens = None
-            elif self._max_tokens_per_property is None:
-                max_tokens = min(
-                    self._max_tokens_total - tokens_used, MAX_CONTEXT_LENGTH
-                )
-            elif self._max_tokens_total is None:
-                max_tokens = min(
-                    self._max_tokens_per_property, MAX_CONTEXT_LENGTH
-                )
-            else:
-                max_tokens = min(
-                    self._max_tokens_per_property,
-                    self._max_tokens_total - tokens_used,
-                    MAX_CONTEXT_LENGTH,
-                )
-            pcr, tokens_just_used = self.check_proof(
-                property_location,
-                max_tokens,
-            )
+            pcr = self.check_proof(property_location)
             ret.append(pcr)
-            tokens_used += tokens_just_used
 
         return ret
 
     def check_proof(
-        self, property_location: PropertyLocation, max_tokens: int | None
-    ) -> tuple[ProofCheckResult, int]:
-        files_shown = set()
+        self, property_location: PropertyLocation
+    ) -> ProofCheckResult:
+        files_shown: set[Path] = set()
         all_files = set(self._rel_paths)
 
-        input_tokens_in_messages = 0
-        input_tokens_sent = 0
-        completion_tokens_used = 0
+        tokens_used = 0
 
         initial_message = self._build_initial_message(property_location)
-        logger.debug(initial_message)
+        # logger.debug(initial_message)
         messages = [
             {
                 "role": "user",
@@ -268,36 +227,9 @@ File contents:
         ]
 
         for _ in range(self._max_messages):
-            input_tokens_in_messages = sum(
-                len(enc.encode(m["content"])) + MESSAGE_ENVELOPE_TOKENS
-                for m in messages
-                if m["role"] == "user"
-            )
-            if max_tokens is None:
-                max_completion_tokens_key = dict()
-            else:
-                max_completion_tokens = (
-                    max_tokens
-                    - completion_tokens_used
-                    - input_tokens_in_messages
-                )
-                if max_completion_tokens <= 0:
-                    return (
-                        ProofCheckResult(
-                            property_location=property_location,
-                            correctness_explanation=Failure(
-                                msg="Token limit reached"
-                            ),
-                        ),
-                        completion_tokens_used + input_tokens_sent,
-                    )
-                max_completion_tokens_key = {
-                    "max_completion_tokens": max_completion_tokens,
-                }
             try:
                 resp = openai_client.beta.chat.completions.parse(
                     **MODEL,
-                    **max_completion_tokens_key,  # type: ignore
                     messages=messages,  # type: ignore
                     response_format=(
                         FullFilesExcludedResponse
@@ -305,20 +237,22 @@ File contents:
                         else FullFilesIncludedResponse
                     ),
                 )
-            except (BadRequestError, LengthFinishReasonError) as e:
-                return (
-                    ProofCheckResult(
-                        property_location=property_location,
-                        correctness_explanation=Failure(msg=str(e)),
+            except LengthFinishReasonError as lfre:
+                usage = lfre.completion.usage
+                if usage is None:
+                    raise RuntimeError("No token usage available")
+                return ProofCheckResult(
+                    property_location=property_location,
+                    correctness_explanation=Failure(
+                        msg="Model token limit reached"
                     ),
-                    # a guess
-                    max_tokens or MAX_CONTEXT_LENGTH,
+                    tokens_used=usage.total_tokens + tokens_used,
                 )
+
             logger.debug(f"Token usage: {resp.usage}")
             if resp.usage is None:
                 raise RuntimeError("No token usage available")
-            completion_tokens_used += resp.usage.completion_tokens
-            input_tokens_sent = input_tokens_in_messages
+            tokens_used += resp.usage.total_tokens
 
             resp_message = resp.choices[0].message
             if resp_message.content is None:
@@ -332,12 +266,10 @@ File contents:
             response_data = resp_message.parsed.data
 
             if isinstance(response_data, CorrectnessExplanation):
-                return (
-                    ProofCheckResult(
-                        property_location=property_location,
-                        correctness_explanation=response_data,
-                    ),
-                    completion_tokens_used + input_tokens_sent,
+                return ProofCheckResult(
+                    property_location=property_location,
+                    correctness_explanation=response_data,
+                    tokens_used=tokens_used,
                 )
             else:
                 files_requested = sorted(
@@ -355,7 +287,7 @@ File contents:
                 subsequent_message = self._build_subsequent_message(
                     files_requested
                 )
-                logger.debug(subsequent_message)
+                # logger.debug(subsequent_message)
                 messages.append(
                     {
                         "role": "user",
@@ -363,7 +295,13 @@ File contents:
                     }
                 )
         else:
-            raise TimeoutError("No result after max messages")
+            return ProofCheckResult(
+                property_location=property_location,
+                correctness_explanation=Failure(
+                    msg="No result after max responses"
+                ),
+                tokens_used=tokens_used,
+            )
 
 
 def main(
@@ -380,18 +318,12 @@ def main(
     max_files: Annotated[
         int, typer.Option(help="Max number of files in the codebase")
     ] = 1_000,
-    max_messages: Annotated[
+    max_responses_per_property: Annotated[
         int,
         typer.Option(
-            help="Max number of messages in each LLM conversation before aborting"
+            help="Max number of responses in the LLM conversation about a property"
         ),
-    ] = 50,
-    min_length_to_exclude_full_files: Annotated[
-        int,
-        typer.Option(
-            help="Min size of codebase (in characters) such that we do not include all file contents in the initial prompt"
-        ),
-    ] = 100_000,
+    ] = 10,
     filter_path: Annotated[
         list[str] | None,
         typer.Option(
@@ -404,26 +336,18 @@ def main(
             help="Natural language instructions on which properties to check."
         ),
     ] = None,
-    max_tokens_total: Annotated[
-        int | None,
-        typer.Option(help="Max number of tokens to use (approximate!)"),
-    ] = None,
-    max_tokens_per_property: Annotated[
-        int | None,
-        typer.Option(
-            help="Max number of tokens to use per property (approximate!)"
-        ),
-    ] = None,
+    always_exclude_full_files: Annotated[
+        bool,
+        typer.Option(hidden=True),
+    ] = False,
 ):
     linter = Linter(
         directory=directory,
         max_files=max_files,
-        max_messages=max_messages,
-        min_length_to_exclude_full_files=min_length_to_exclude_full_files,
+        max_messages=max_responses_per_property,
         filter_paths=filter_path or [],
         property_filter=property_filter,
-        max_tokens_total=max_tokens_total,
-        max_tokens_per_property=max_tokens_per_property,
+        always_exclude_full_files=always_exclude_full_files,
     )
     results = linter.check_proofs()
     print(

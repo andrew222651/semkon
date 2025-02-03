@@ -7,9 +7,10 @@ Features:
 * automatically finds property+proof blocks in your code
   * see [example](tests/example_repo/example_repo/foo.py)
 * recognizes stated "axioms"
-* configurable file exclusion, token limits
+* configurable file exclusion
 
-Requires OpenAI API key.
+Requires OpenAI API key. Costs can be unpredictable so to be fully safe, use a
+project API key with a project budget limit.
 
 Run: `semkon --help`
 

@@ -3,6 +3,9 @@ from pathlib import Path
 import gitignore_parser
 
 
+MAX_FILE_SIZE = 100 * 1024  # 100 KB
+
+
 def _is_text_file(abs_path: Path) -> bool:
     try:
         abs_path.read_text()
@@ -12,7 +15,7 @@ def _is_text_file(abs_path: Path) -> bool:
 
 
 def _is_small_file(abs_path: Path) -> bool:
-    return abs_path.stat().st_size < 100 * 1024  # less than 100 KB
+    return abs_path.stat().st_size < MAX_FILE_SIZE
 
 
 FILTER_ALWAYS = [

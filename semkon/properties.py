@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 from loguru import logger
 from pydantic import BaseModel
@@ -18,7 +19,7 @@ class PropositionsResponse(BaseModel):
 
 
 def extract_propositions(
-    content: str, filter: str | None = None
+    content: str, filter: str | None = None, rel_path: Path | None = None
 ) -> list[Proposition]:
     if not re.search(r"\bproof\b", content, re.IGNORECASE):
         return []
@@ -41,7 +42,7 @@ Extract all such propositions that satisfy the following criteria:
 For example, there may be propositions about running times,
 correctness, or auxiliary facts.
 
-{format_file(content)}"""
+{format_file(content, rel_path=rel_path)}"""
     logger.debug(initial_message)
 
     resp = openai_client.beta.chat.completions.parse(
