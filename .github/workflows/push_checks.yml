@@ -1,0 +1,80 @@
+name: push_checks
+
+on:
+  push:
+    tags-ignore:
+      - '**'
+    branches:
+      - '**'
+
+jobs:
+  black:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install black
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install black
+      - name: Analyze the code with black
+        run: black --check .
+  pyright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -e .[dev]
+      - name: Run type checking
+        run: pyright
+  isort:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install isort
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install isort
+      - name: Check the format of import statements
+        run: isort . -c
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install ruff
+      - name: Run ruff
+        run: ruff check .
+  #tests:
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - uses: actions/checkout@v3
+  #    - name: Set up Python
+  #      uses: actions/setup-python@v4
+  #      with:
+  #        python-version: "3.12"
+  #    - name: Install Python dependencies
+  #      run: |
+  #        pip install --upgrade pip setuptools wheel
+  #        pip install -e .[dev]
+  #    - name: Run tests
+  #      run: python -m unittest
