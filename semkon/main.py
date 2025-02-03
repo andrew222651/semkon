@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Literal, Sequence
+from typing import Annotated, Any, Literal
 
 import chromadb
 import tiktoken
@@ -19,6 +19,7 @@ from .file_filters import get_rel_paths
 from .properties import extract_propositions
 from .python_deps import get_deps_rec
 from .safe_sympy import execute
+
 
 MAX_FILES_REQUESTED = 5
 
