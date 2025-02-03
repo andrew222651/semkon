@@ -20,8 +20,17 @@ from .properties import extract_propositions
 from .python_deps import get_deps_rec
 
 
+# Basically we have two methods to control the API usage:
+# * max tokens: approximate because we don't know exactly
+#   how many tokens we use
+# * how much work is done (also approximate)
+#   * limited set of properties
+#   * max messages per property
+#   * max files per message
+#   * max file size
+
 MAX_FILES_REQUESTED = 5
-# more tokens get sent than we count so this supposed to be
+# more tokens get sent than we count so this is supposed to be
 # an upper bound on the extra (just a guess)
 MESSAGE_ENVELOPE_TOKENS = 300
 
