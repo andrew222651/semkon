@@ -139,8 +139,15 @@ what the code does. Mark the proof as "incorrect" if you understand it and the
 code but the proof is wrong. Use "unknown" if e.g. you don't 100% know how an
 external library works, or the proof needs more detail. Skeptically and
 rigorously check every claim with references to the code. If the proof
-references an explicitly-stated axiom (or "assumption", etc), you can assume
-that the axiom is correct."""
+references an explicitly-stated axiom (or "assumption", etc) found in the
+codebase, you can assume that the axiom is true. If the proof references another
+proposition from the codebase, you can assume that the other proposition is true
+if the codebase provides a proof for it (you don't have to check that proof) or
+if it's well-known or if a reference to the literature is provided. However, if
+the proof we're checking is part of a cycle of dependencies where the proof of
+one proposition relies on the truth of the next, report this proof as
+"incorrect".
+"""
 
         if not self._exclude_full_files:
             return f"""The following is a listing of all files in a codebase:
