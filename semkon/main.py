@@ -427,7 +427,7 @@ File contents:
             )
             if resp_message.parsed is None:
                 raise RuntimeError("No response from LLM")
-            response_data = resp_message.parsed.data
+            response_data = resp_message.parsed.data  # type: ignore
 
             if isinstance(response_data, CorrectnessExplanation):
                 return ProofCheckResult(
