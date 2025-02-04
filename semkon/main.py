@@ -3,7 +3,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 import chromadb
 import tiktoken
@@ -11,7 +11,7 @@ import typer
 from chromadb.api import ClientAPI
 from loguru import logger
 from openai import LengthFinishReasonError
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 from .clients import openai_client
 from .code_quoting import format_file
@@ -73,19 +73,8 @@ class ExecutePython(BaseModel):
     code: str
 
 
-SafeData = FilesRequested | CorrectnessExplanation
-
-
-class FullFilesExcludedResponse(BaseModel):
-    data: SafeData
-
-
-class FullFilesExcludedExecutePythonResponse(BaseModel):
-    data: SafeData | ExecutePython
-
-
-class FullFilesIncludedResponse(BaseModel):
-    data: CorrectnessExplanation
+class SemanticSearchQuery(BaseModel):
+    query: str
 
 
 class Failure(BaseModel):
@@ -171,7 +160,19 @@ provided to you in the next message. You will have the opportunity to request
 further files if needed, and we will repeat this process until you are ready to
 make a final determination. You can request up to {MAX_FILES_REQUESTED} files
 at a time."""
-        options.append(request_files)
+        if self._exclude_full_files:
+            options.append(request_files)
+
+        semantic_search = f"""Semantic search
+
+You may respond with a natural-language query to search the codebase for
+relevant files that could help make progress towards our goal. The search
+results will be provided in the next message. Specifically, the ranking of
+files will be shown, and the contents of the top
+{MAX_FILES_REQUESTED} new files will be listed.
+"""
+        if self._exclude_full_files:
+            options.append(semantic_search)
 
         execute_python = f"""Execute Python code
 
@@ -213,10 +214,13 @@ The file {property_location.rel_path} contains one or more propositions
 about the codebase. The proposition we are interested in is on line
 {property_location.line_num}, and is followed by a proof.
 
-In your response, state whether the proof (not the proposition) is correct.
-{CORRECTNESS_BLURB}
-        
+The goal of this conversation is to determine whether the proof 
+(not the proposition) is correct.
 
+Your responses in this conversation can be one of the following.
+
+{self._get_response_options()}
+      
 File contents:
 {"\n".join(format_file((self._directory / p).read_text(), rel_path=p) for p in self._rel_paths)}
             """
@@ -256,6 +260,70 @@ File contents:
 
         return ret
 
+    # mutates `files_shown`
+    def _get_files_requested_data(
+        self,
+        files_requested: FilesRequested,
+        files_shown: set[Path],
+        all_files: set[Path],
+    ) -> str:
+        rel_paths = sorted(
+            (all_files & {Path(p) for p in files_requested.files_requested})
+            - files_shown
+        )[:MAX_FILES_REQUESTED]
+        files_shown.update(rel_paths)
+
+        if not rel_paths:
+            raise RuntimeError("Invalid response")
+
+        return "\n".join(
+            format_file((self._directory / p).read_text(), rel_path=p)
+            for p in rel_paths
+        )
+
+    # mutates `files_shown`
+    def _get_semantic_search_data(
+        self, query: str, files_shown: set[Path]
+    ) -> str:
+        results = self._collection.query(query_texts=[query])
+        assert results["distances"] is not None
+
+        distance_dicts: list[dict[str, Any]] = []
+        for id_, distance in zip(results["ids"][0], results["distances"][0]):
+            distance_dicts.append(
+                {
+                    "file": id_,
+                    "semantic_distance": distance,
+                }
+            )
+        distance_dicts.sort(key=lambda d: d["semantic_distance"])
+
+        rel_paths = [Path(d["file"]) for d in distance_dicts]
+        rel_paths_to_show = [p for p in rel_paths if p not in files_shown][
+            :MAX_FILES_REQUESTED
+        ]
+
+        files_shown.update(rel_paths_to_show)
+
+        return f"""{json.dumps(distance_dicts, indent=2)}
+
+{"\n".join(
+    format_file(
+        (self._directory / p).read_text(), rel_path=p
+    )
+    for p in rel_paths_to_show
+)}
+        """
+
+    def _get_response_format(self) -> type[BaseModel]:
+        types: list[type] = [CorrectnessExplanation]
+        if self._execute_python:
+            types.append(ExecutePython)
+        if self._exclude_full_files:
+            types += [FilesRequested, SemanticSearchQuery]
+
+        return create_model("ResponseFormat", data=(Union[tuple(types)], ...))
+
     def check_proof(
         self, property_location: PropertyLocation
     ) -> ProofCheckResult:
@@ -273,20 +341,12 @@ File contents:
             }
         ]
 
-        response_format: type[BaseModel]
-        if self._exclude_full_files:
-            if self._execute_python:
-                response_format = FullFilesExcludedExecutePythonResponse
-            else:
-                response_format = FullFilesExcludedResponse
-        else:
-            response_format = FullFilesIncludedResponse
         for _ in range(self._max_messages):
             try:
                 resp = openai_client.beta.chat.completions.parse(
                     **MODEL,
                     messages=messages,  # type: ignore
-                    response_format=response_format,
+                    response_format=self._get_response_format(),
                 )
             except LengthFinishReasonError as lfre:
                 usage = lfre.completion.usage
@@ -324,29 +384,22 @@ File contents:
                 )
             else:
                 if isinstance(response_data, FilesRequested):
-                    files_requested = sorted(
-                        (
-                            all_files
-                            & {Path(p) for p in response_data.files_requested}
-                        )
-                        - files_shown
-                    )[:MAX_FILES_REQUESTED]
-                    files_shown.update(files_requested)
-
-                    if not files_requested:
-                        raise RuntimeError("Invalid response")
-
                     subsequent_message = self._build_subsequent_message(
-                        "\n".join(
-                            format_file(
-                                (self._directory / p).read_text(), rel_path=p
-                            )
-                            for p in files_requested
+                        self._get_files_requested_data(
+                            response_data,
+                            files_shown=files_shown,
+                            all_files=all_files,
                         )
                     )
                 elif isinstance(response_data, ExecutePython):
                     result = execute(response_data.code)
                     subsequent_message = self._build_subsequent_message(result)
+                elif isinstance(response_data, SemanticSearchQuery):
+                    subsequent_message = self._build_subsequent_message(
+                        self._get_semantic_search_data(
+                            response_data.query, files_shown=files_shown
+                        )
+                    )
                 else:
                     assert False
                 messages.append(
