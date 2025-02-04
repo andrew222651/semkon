@@ -18,10 +18,10 @@ def foo_func(n: int) -> int:
 def big_multiply(n: int) -> int:
     """
     ::: {.theorem #big_multiply}
-    This function always returns `7699497396633402`.
+    This function always returns `7799582153435054897103745402`.
     :::
     ::: {.proof}
-    It returns `92832938 * 8293929`, which is `7699497396633402`.
+    It returns `9283394823982938 * 829392942929`, which is `7799582153435054897103745402`.
     :::
     """
-    return 92832938 * 8293929
+    return 9283394823982938 * 829392942929

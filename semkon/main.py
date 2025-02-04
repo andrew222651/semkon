@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
@@ -75,6 +76,10 @@ class ExecutePython(BaseModel):
 
 class SemanticSearchQuery(BaseModel):
     query: str
+
+
+class RegexSearch(BaseModel):
+    regex: str
 
 
 class Failure(BaseModel):
@@ -173,6 +178,20 @@ files will be shown, and the contents of the top
 """
         if self._exclude_full_files:
             options.append(semantic_search)
+
+        regex_search = f"""Regex search
+
+You may respond with a Python regex pattern to search the codebase if that would
+be useful towards our goal. Provide the regex directly, not as a Python string
+literal, not surrounded by slashes, and not in Markdown code formatting or any
+other formatting. The results of the search will be provided in the next
+message. Specifically, we will run `re.search(regex, line)` on each line of each
+file, and if there's a match, the line is considered matching. All matching
+files will be listed, and the first {MAX_FILES_REQUESTED} matching lines will be
+shown. If there's an error, the error message will be shown.
+"""
+        if self._exclude_full_files:
+            options.append(regex_search)
 
         execute_python = f"""Execute Python code
 
@@ -315,12 +334,46 @@ File contents:
 )}
         """
 
+    def _get_regex_search_data(self, regex: str) -> str:
+        try:
+            compiled = re.compile(regex)
+        except re.error as e:
+            return str(e)
+
+        ret_json = []
+
+        for p in self._rel_paths:
+            text = (self._directory / p).read_text()
+            matching_lines = []
+            for i, line in enumerate(text.splitlines()):
+                if compiled.search(line):
+                    matching_lines.append(
+                        {
+                            "line_num": i + 1,
+                            "line": line,
+                        }
+                    )
+            if matching_lines:
+                ret_json.append(
+                    {
+                        "file": str(p),
+                        "num_matching_lines": len(matching_lines),
+                        "first_matching_lines": matching_lines[
+                            :MAX_FILES_REQUESTED
+                        ],
+                    }
+                )
+
+        if not ret_json:
+            return "(No matches found)"
+        return json.dumps(ret_json, indent=2)
+
     def _get_response_format(self) -> type[BaseModel]:
         types: list[type] = [CorrectnessExplanation]
         if self._execute_python:
             types.append(ExecutePython)
         if self._exclude_full_files:
-            types += [FilesRequested, SemanticSearchQuery]
+            types += [FilesRequested, SemanticSearchQuery, RegexSearch]
 
         return create_model("ResponseFormat", data=(Union[tuple(types)], ...))
 
@@ -399,6 +452,10 @@ File contents:
                         self._get_semantic_search_data(
                             response_data.query, files_shown=files_shown
                         )
+                    )
+                elif isinstance(response_data, RegexSearch):
+                    subsequent_message = self._build_subsequent_message(
+                        self._get_regex_search_data(response_data.regex)
                     )
                 else:
                     assert False
