@@ -46,7 +46,7 @@ correctness, or auxiliary facts.
     logger.debug(initial_message)
 
     resp = openai_client.beta.chat.completions.parse(
-        model="gpt-4o-mini",
+        model="gpt-4.1-mini",
         messages=[{"role": "user", "content": initial_message}],
         response_format=PropositionsResponse,
     )

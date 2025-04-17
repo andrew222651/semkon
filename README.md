@@ -13,6 +13,9 @@ Features:
 Requires OpenAI API key. Costs can be unpredictable so to be fully safe, use a
 project API key with a project budget limit.
 
+You can choose which OpenAI model to use. As of Feb 2025, only o1 is useful in
+@andrew222651's tests on real code, and no non-OpenAI models are useful.
+
 Run: `semkon --help`
 
 Install for development: `pip install -e ".[dev]"`
