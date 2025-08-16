@@ -6,6 +6,7 @@ codebase.
 Features:
 * automatically finds property+proof blocks in your code
   * see [example](tests/example_repo/example_repo/foo.py)
+  * there's no required syntax since detection is done by an LLM. for markdown one option is <https://mystmd.org/guide/proofs-and-theorems>
 * recognizes stated "axioms"
 * configurable file exclusion
 * can execute Python code (off by default)
